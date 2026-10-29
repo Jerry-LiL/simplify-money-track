@@ -444,4 +444,296 @@ describe('sync', () => {
     // 2 unreadable in list + 1 unreadable in changes = 3
     expect(result.unreadable).toBe(3);
   });
+
+  it('proves the store passed in is not mutated when full fallback fails half-way after 410', async () => {
+    const existingTxn = {
+      id: 'txn_existing',
+      accountId: 'acc_4821',
+      occurredAt: 1000,
+      direction: 'debit' as const,
+      amountMinor: 500,
+      currency: 'INR',
+      inrMinor: 500,
+      merchant: 'Existing',
+      category: null,
+      status: 'POSTED' as const,
+      updatedAt: 0,
+      ownTransfer: false,
+      counterpartyAccountId: null,
+      raw: {},
+    };
+
+    const initialStore: TxnStore = {
+      byId: { txn_existing: existingTxn },
+      tombstones: {},
+    };
+
+    let fullSyncPage = 0;
+    const mockFetch = jest.fn().mockImplementation(async (url: string) => {
+      if (url.includes('/v1/accounts')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ items: accounts }),
+        };
+      }
+      if (url.includes('/v1/transactions/changes?')) {
+        return {
+          ok: false,
+          status: 410,
+          json: async () => ({ error: 'sync_token_expired' }),
+          headers: new Headers(),
+        };
+      }
+      if (url.includes('/v1/transactions?')) {
+        fullSyncPage++;
+        if (fullSyncPage === 1) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              items: [{
+                id: 'txn_new_1',
+                account_id: 'acc_4821',
+                occurred_at: '2026-10-09T10:00:00Z',
+                direction: 'debit',
+                amount_minor: 1000,
+                status: 'POSTED',
+              }],
+              next_cursor: 'cur_p2',
+              sync_token: 'st_p1',
+            }),
+          };
+        }
+        return {
+          ok: false,
+          status: 400,
+          json: async () => ({ error: 'bad_page' }),
+          headers: new Headers(),
+        };
+      }
+      return { ok: false, status: 404, json: async () => ({}) };
+    });
+
+    const api = createApi('http://test-api.local', mockFetch, { sleepImpl: fakeSleep });
+
+    await expect(
+      syncAll({
+        api,
+        store: initialStore,
+        syncToken: 'st_expired',
+        accounts,
+      })
+    ).rejects.toThrow();
+
+    expect(initialStore.byId['txn_existing']).toEqual(existingTxn);
+    expect(initialStore.byId['txn_new_1']).toBeUndefined();
+    expect(Object.keys(initialStore.byId)).toEqual(['txn_existing']);
+    expect(initialStore.tombstones).toEqual({});
+  });
+
+  it('waits for in-flight sync with a different key to settle and then starts the new one', async () => {
+    let resolveFirstSync: () => void = () => {};
+    const firstSyncPromise = new Promise<void>((resolve) => {
+      resolveFirstSync = resolve;
+    });
+
+    const calls: string[] = [];
+
+    const mockFetch = jest.fn().mockImplementation(async (url: string) => {
+      if (url.startsWith('http://server-1')) {
+        if (!url.includes('/changes')) {
+          calls.push('server-1:start');
+          await firstSyncPromise;
+          calls.push('server-1:end');
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            items: [],
+            next_cursor: null,
+            sync_token: 'st_server1',
+          }),
+        };
+      }
+      if (url.startsWith('http://server-2')) {
+        if (!url.includes('/changes')) {
+          calls.push('server-2:run');
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            items: [],
+            next_cursor: null,
+            sync_token: 'st_server2',
+          }),
+        };
+      }
+      return { ok: false, status: 404, json: async () => ({}) };
+    });
+
+    const api1 = createApi('http://server-1', mockFetch, { sleepImpl: fakeSleep });
+    const api2 = createApi('http://server-2', mockFetch, { sleepImpl: fakeSleep });
+    const store = createEmptyStore();
+
+    const p1 = syncAll({
+      api: api1,
+      store,
+      syncToken: null,
+      accounts,
+      key: 'http://server-1:true',
+    });
+
+    await new Promise((r) => setTimeout(r, 10));
+    expect(calls).toEqual(['server-1:start']);
+
+    const p2 = syncAll({
+      api: api2,
+      store,
+      syncToken: null,
+      accounts,
+      key: 'http://server-2:true',
+    });
+
+    await new Promise((r) => setTimeout(r, 10));
+    expect(calls).toEqual(['server-1:start']);
+
+    resolveFirstSync();
+
+    const [res1, res2] = await Promise.all([p1, p2]);
+    expect(res1.syncToken).toBe('st_server1');
+    expect(res2.syncToken).toBe('st_server2');
+    expect(calls).toEqual(['server-1:start', 'server-1:end', 'server-2:run']);
+  });
+
+  it('waits for in-flight sync with a different key, ignores its error, and starts the new one', async () => {
+    let rejectFirstSync: (err: Error) => void = () => {};
+    const firstSyncPromise = new Promise<void>((_, reject) => {
+      rejectFirstSync = reject;
+    });
+
+    const mockFetch = jest.fn().mockImplementation(async (url: string) => {
+      if (url.startsWith('http://server-error')) {
+        await firstSyncPromise;
+        return {
+          ok: false,
+          status: 500,
+          json: async () => ({ error: 'crashed' }),
+          headers: new Headers(),
+        };
+      }
+      if (url.startsWith('http://server-ok')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            items: [],
+            next_cursor: null,
+            sync_token: 'st_ok',
+          }),
+        };
+      }
+      return { ok: false, status: 404, json: async () => ({}) };
+    });
+
+    const api1 = createApi('http://server-error', mockFetch, { sleepImpl: fakeSleep, maxRetries: 0 });
+    const api2 = createApi('http://server-ok', mockFetch, { sleepImpl: fakeSleep });
+    const store = createEmptyStore();
+
+    const p1 = syncAll({
+      api: api1,
+      store,
+      syncToken: null,
+      accounts,
+      key: 'http://server-error:true',
+    });
+
+    const p2 = syncAll({
+      api: api2,
+      store,
+      syncToken: null,
+      accounts,
+      key: 'http://server-ok:true',
+    });
+
+    rejectFirstSync(new Error('Server 1 crashed'));
+
+    await expect(p1).rejects.toThrow();
+
+    const res2 = await p2;
+    expect(res2.syncToken).toBe('st_ok');
+  });
+
+  it('treats forced full sync and incremental sync as different keys and does not return the same promise', async () => {
+    let resolveFirst: () => void = () => {};
+    const firstPromise = new Promise<void>((resolve) => {
+      resolveFirst = resolve;
+    });
+
+    const mockFetch = jest.fn().mockImplementation(async (url: string) => {
+      if (url.includes('/v1/transactions/changes?')) {
+        if (url.includes('since=st_initial')) {
+          await firstPromise;
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              items: [],
+              next_cursor: null,
+              sync_token: 'st_inc',
+            }),
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            items: [],
+            next_cursor: null,
+            sync_token: 'st_full',
+          }),
+        };
+      }
+      if (url.includes('/v1/transactions?')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            items: [],
+            next_cursor: null,
+            sync_token: 'st_list',
+          }),
+        };
+      }
+      return { ok: false, status: 404, json: async () => ({}) };
+    });
+
+    const api = createApi('http://test-api.local', mockFetch, { sleepImpl: fakeSleep });
+    const store = createEmptyStore();
+
+    const p1 = syncAll({
+      api,
+      store,
+      syncToken: 'st_initial',
+      accounts,
+      forceFull: false,
+    });
+
+    const p2 = syncAll({
+      api,
+      store,
+      syncToken: null,
+      accounts,
+      forceFull: true,
+    });
+
+    expect(p1).not.toBe(p2);
+
+    resolveFirst();
+    const [res1, res2] = await Promise.all([p1, p2]);
+    expect(res1.syncToken).toBe('st_inc');
+    expect(res2.syncToken).toBe('st_full');
+  });
 });
