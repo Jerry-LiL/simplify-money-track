@@ -379,4 +379,69 @@ describe('sync', () => {
     expect(accountsCalls).toBe(1);
     expect(listCalls).toBe(1);
   });
+
+  it('counts unreadable records in fullSync and incrementalSync and returns unreadable count in SyncResult', async () => {
+    const validTxn = {
+      id: 'txn_ok',
+      account_id: 'acc_4821',
+      occurred_at: '2026-10-09T10:00:00Z',
+      direction: 'debit',
+      amount_minor: 1000,
+      currency: 'INR',
+      merchant: 'Valid',
+      status: 'POSTED',
+    };
+    const invalidTxn1 = { id: '', broken: true };
+    const invalidTxn2 = { id: 'txn_bad_amount', account_id: 'acc_4821', amount_minor: 'not_a_number' };
+
+    const invalidChange = { id: '', missing_fields: true };
+
+    const mockFetch = jest.fn().mockImplementation(async (url: string) => {
+      if (url.includes('/v1/accounts')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ items: accounts }),
+        };
+      }
+      if (url.includes('/v1/transactions?')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            items: [validTxn, invalidTxn1, invalidTxn2],
+            next_cursor: null,
+            sync_token: 'st_list_unreadable',
+          }),
+        };
+      }
+      if (url.includes('/v1/transactions/changes?')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            items: [invalidChange],
+            next_cursor: null,
+            sync_token: 'st_final_unreadable',
+          }),
+        };
+      }
+      return { ok: false, status: 404, json: async () => ({}) };
+    });
+
+    const api = createApi('http://test-api.local', mockFetch, { sleepImpl: fakeSleep });
+    const store = createEmptyStore();
+
+    const result = await syncAll({
+      api,
+      store,
+      syncToken: null,
+      accounts,
+    });
+
+    expect(Object.keys(result.store.byId)).toHaveLength(1);
+    expect(result.store.byId['txn_ok']).toBeDefined();
+    // 2 unreadable in list + 1 unreadable in changes = 3
+    expect(result.unreadable).toBe(3);
+  });
 });

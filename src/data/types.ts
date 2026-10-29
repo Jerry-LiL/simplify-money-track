@@ -29,16 +29,16 @@ export interface TxnStore {
 }
 
 export interface RawCurrentTxn {
-  id: string;
+  id: string | number;
   account_id: string;
-  occurred_at: string;
+  occurred_at: string | number;
   direction: 'debit' | 'credit';
   amount_minor: number;
   currency?: string;
   merchant?: string;
   category?: string | null;
   status?: 'POSTED' | 'PENDING' | string;
-  updated_at?: string;
+  updated_at?: string | number;
   fx?: {
     inr_minor?: number;
   };
@@ -49,21 +49,21 @@ export interface RawCurrentTxn {
 }
 
 export interface RawLegacyTxn {
-  id: string;
-  account: string;
-  txn_time: number;
+  id: string | number;
+  account: string | number;
+  txn_time: number | string;
   amount: string;
   type: 'DR' | 'CR' | string;
   merchant_name?: string;
   category?: string | null;
   status?: string;
-  linked_account?: string;
+  linked_account?: string | number;
 }
 
 export interface RawChangeDeletion {
-  id: string;
+  id: string | number;
   deleted: true;
-  updated_at: string;
+  updated_at: string | number;
 }
 
 export interface TransactionsPageResponse {

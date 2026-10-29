@@ -6,11 +6,13 @@ import { applyChangesPage, applyRecords, createEmptyStore } from './store';
 export interface FullSyncResult {
   store: TxnStore;
   syncToken: string;
+  unreadable: number;
 }
 
 export interface IncrementalSyncResult {
   store: TxnStore;
   syncToken: string;
+  unreadable: number;
 }
 
 export interface SyncDeps {
@@ -26,6 +28,7 @@ export interface SyncResult {
   syncToken: string;
   accounts: Account[];
   lastSyncedAt: number;
+  unreadable: number;
 }
 
 let inFlightSync: Promise<SyncResult> | null = null;
@@ -46,6 +49,7 @@ export async function fullSync(
   let listSyncToken: string | null = null;
   let pagesLoaded = 0;
   let recordsLoaded = 0;
+  let unreadableCount = 0;
 
   do {
     const res = await api.getTransactionsPage(cursor, 100);
@@ -58,6 +62,8 @@ export async function fullSync(
       const norm = normalizeTxn(raw, accounts);
       if (norm) {
         normalized.push(norm);
+      } else {
+        unreadableCount++;
       }
     }
 
@@ -85,6 +91,7 @@ export async function fullSync(
   return {
     store: incrementalResult.store,
     syncToken: incrementalResult.syncToken,
+    unreadable: unreadableCount + incrementalResult.unreadable,
   };
 }
 
@@ -105,6 +112,7 @@ export async function incrementalSync(
   let currentToken = token;
   let pagesLoaded = initialProgress?.pagesLoaded ?? 0;
   let recordsLoaded = initialProgress?.recordsLoaded ?? 0;
+  let unreadableCount = 0;
 
   do {
     const res = await api.getChangesPage(currentToken, cursor, 100);
@@ -114,6 +122,7 @@ export async function incrementalSync(
     const changeResult = applyChangesPage(workingStore, res.items || [], accounts);
     workingStore = changeResult.store;
     recordsLoaded += changeResult.appliedCount;
+    unreadableCount += changeResult.unreadableCount;
     cursor = res.next_cursor;
 
     onProgress?.({ pagesLoaded, recordsLoaded });
@@ -122,6 +131,7 @@ export async function incrementalSync(
   return {
     store: workingStore,
     syncToken: currentToken,
+    unreadable: unreadableCount,
   };
 }
 
@@ -139,7 +149,7 @@ export async function syncAll(deps: SyncDeps): Promise<SyncResult> {
       accounts = accRes.items;
     }
 
-    let syncResult: { store: TxnStore; syncToken: string };
+    let syncResult: { store: TxnStore; syncToken: string; unreadable: number };
 
     if (!deps.syncToken) {
       syncResult = await fullSync(deps.api, accounts, deps.onProgress);
@@ -164,6 +174,7 @@ export async function syncAll(deps: SyncDeps): Promise<SyncResult> {
       syncToken: syncResult.syncToken,
       accounts,
       lastSyncedAt: Date.now(),
+      unreadable: syncResult.unreadable,
     };
   };
 
