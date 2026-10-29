@@ -2,13 +2,22 @@ import { buildListRows, buildMonths, searchTxns } from '../aggregate';
 import { Txn, TxnStore } from '../types';
 
 function createTxn(overrides: Partial<Txn> & { id: string }): Txn {
+  const amountMinor = overrides.amountMinor ?? 1000;
+  const currency = overrides.currency ?? 'INR';
+  const inrMinor =
+    overrides.inrMinor !== undefined
+      ? overrides.inrMinor
+      : currency === 'INR'
+      ? amountMinor
+      : null;
+
   return {
     accountId: 'acc_4821',
     occurredAt: 1760000000000,
     direction: 'debit',
-    amountMinor: 1000,
-    currency: 'INR',
-    inrMinor: 1000,
+    amountMinor,
+    currency,
+    inrMinor,
     merchant: 'Merchant',
     category: 'GENERAL',
     status: 'POSTED',
@@ -222,6 +231,62 @@ describe('aggregate', () => {
       expect(searchTxns(store, '470.39').map((t) => t.id)).toEqual(['t1']);
       expect(searchTxns(store, '470').map((t) => t.id)).toEqual(['t1']);
       expect(searchTxns(store, '89').map((t) => t.id)).toEqual(['t3']);
+    });
+
+    it('matches rupee amounts: 349 matches ₹349.00 and ₹349.50, and 1,749 matches 174900 paise', () => {
+      const amountStore: TxnStore = {
+        byId: {
+          t_round: createTxn({ id: 't_round', merchant: 'Alpha', inrMinor: 34900, amountMinor: 34900 }),
+          t_paise: createTxn({ id: 't_paise', merchant: 'Beta', inrMinor: 34950, amountMinor: 34950 }),
+          t_other: createTxn({ id: 't_other', merchant: 'Gamma', inrMinor: 349000, amountMinor: 349000 }),
+          t_comma: createTxn({ id: 't_comma', merchant: 'Delta', inrMinor: 174900, amountMinor: 174900 }),
+        },
+        tombstones: {},
+      };
+
+      const matched349 = searchTxns(amountStore, '349');
+      expect(matched349.map((t) => t.id).sort()).toEqual(['t_paise', 't_round'].sort());
+
+      const matchedComma = searchTxns(amountStore, '1,749');
+      expect(matchedComma.map((t) => t.id)).toEqual(['t_comma']);
+    });
+
+    it('does not match amounts on single digit queries', () => {
+      const amountStore: TxnStore = {
+        byId: {
+          t1: createTxn({ id: 't1', merchant: 'Alpha', inrMinor: 34900, amountMinor: 34900 }),
+          t2: createTxn({ id: 't2', merchant: 'Beta', inrMinor: 1000, amountMinor: 1000 }),
+        },
+        tombstones: {},
+      };
+
+      expect(searchTxns(amountStore, '3')).toEqual([]);
+      expect(searchTxns(amountStore, '1')).toEqual([]);
+    });
+
+    it('does not match foreign amounts against rupee queries', () => {
+      const foreignStore: TxnStore = {
+        byId: {
+          t_usd: createTxn({
+            id: 't_usd',
+            merchant: 'Overseas Service',
+            currency: 'USD',
+            amountMinor: 1000, // US$10.00
+            inrMinor: 86661, // ₹866.61
+          }),
+          t_unconv: createTxn({
+            id: 't_unconv',
+            merchant: 'Euro Train',
+            currency: 'EUR',
+            amountMinor: 1000,
+            inrMinor: null,
+          }),
+        },
+        tombstones: {},
+      };
+
+      expect(searchTxns(foreignStore, '10')).toEqual([]);
+      expect(searchTxns(foreignStore, '866').map((t) => t.id)).toEqual(['t_usd']);
     });
 
     it('returns empty array for empty or whitespace query', () => {

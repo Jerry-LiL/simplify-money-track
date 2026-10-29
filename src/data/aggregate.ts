@@ -94,6 +94,7 @@ function normalizeSearchText(text: string): string {
   return text
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\ufe0f/g, '')
     .toLowerCase();
 }
 
@@ -104,6 +105,16 @@ export function searchTxns(store: TxnStore, query: string): Txn[] {
   }
 
   const q = normalizeSearchText(trimmed);
+
+  const digitMatches = trimmed.match(/\d/g);
+  const digitCount = digitMatches ? digitMatches.length : 0;
+  const cleanNumeric = trimmed
+    .replace(/^[+-]?\s*₹?\s*/, '')
+    .replace(/^(rs|inr)\.?\s*/i, '')
+    .trim();
+  const looksNumeric = /^\d[\d,]*(\.\d+)?$/.test(cleanNumeric) && digitCount >= 2;
+  const queryNumberClean = cleanNumeric.replace(/,/g, '');
+
   const matched: Txn[] = [];
 
   for (const txn of Object.values(store.byId)) {
@@ -121,24 +132,24 @@ export function searchTxns(store: TxnStore, query: string): Txn[] {
       }
     }
 
-    const absMinor = Math.abs(txn.amountMinor);
-    const whole = Math.floor(absMinor / 100);
-    const frac = String(absMinor % 100).padStart(2, '0');
-    const decimalStr = `${whole}.${frac}`;
-    const wholeStr = String(whole);
-    const minorStr = String(absMinor);
+    if (looksNumeric && txn.inrMinor !== null) {
+      const absInrMinor = Math.abs(txn.inrMinor);
+      const rupees = Math.floor(absInrMinor / 100);
+      const paise = absInrMinor % 100;
+      const rupeeStr = String(rupees);
+      const fullDecimal = `${rupeeStr}.${String(paise).padStart(2, '0')}`;
 
-    const inrFormatted = normalizeSearchText(formatINR(txn.amountMinor));
-    const foreignFormatted = normalizeSearchText(formatForeign(txn.amountMinor, txn.currency));
-
-    if (
-      decimalStr.includes(q) ||
-      wholeStr.includes(q) ||
-      minorStr.includes(q) ||
-      inrFormatted.includes(q) ||
-      foreignFormatted.includes(q)
-    ) {
-      matched.push(txn);
+      if (queryNumberClean.includes('.')) {
+        if (fullDecimal === queryNumberClean || fullDecimal.startsWith(queryNumberClean)) {
+          matched.push(txn);
+          continue;
+        }
+      } else {
+        if (rupeeStr === queryNumberClean) {
+          matched.push(txn);
+          continue;
+        }
+      }
     }
   }
 
