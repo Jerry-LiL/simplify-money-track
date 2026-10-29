@@ -42,7 +42,7 @@ export interface TrackContextValue {
   syncToken: string | null;
   hasLoadedSnapshot: boolean;
   setApiUrl: (url: string) => Promise<void>;
-  sync: (opts?: { forceFull?: boolean }) => Promise<void>;
+  sync: (opts?: { forceFull?: boolean; manual?: boolean }) => Promise<void>;
   clearData: () => Promise<void>;
 }
 
@@ -77,25 +77,37 @@ export function TrackProvider({ children }: { children: React.ReactNode }) {
   const rows = useMemo(() => buildListRows(months), [months]);
 
   const sync = useCallback(
-    async (opts?: { forceFull?: boolean }): Promise<void> => {
-      if (isOfflineRef.current) {
+    async (opts?: { forceFull?: boolean; manual?: boolean }): Promise<void> => {
+      if (isOfflineRef.current && opts?.manual === false) {
         setStatus('offline');
         return;
       }
 
+      const requestUrl = apiUrlRef.current;
       setStatus('syncing');
       setLastError(null);
       setProgress({ pagesLoaded: 0, recordsLoaded: 0 });
 
       try {
-        const client = createApi(apiUrlRef.current);
-        const result = await syncAll({
-          api: client,
-          store: opts?.forceFull ? createEmptyStore() : storeRef.current,
-          syncToken: opts?.forceFull ? null : syncTokenRef.current,
-          accounts: accountsRef.current,
-          onProgress: (p) => setProgress(p),
-        });
+        const client = createApi(requestUrl);
+        const isForcedFull = Boolean(opts?.forceFull);
+        const key = `${requestUrl}:${isForcedFull}`;
+        const result = await syncAll(
+          {
+            api: client,
+            store: isForcedFull ? createEmptyStore() : storeRef.current,
+            syncToken: isForcedFull ? null : syncTokenRef.current,
+            accounts: accountsRef.current,
+            onProgress: (p) => setProgress(p),
+            forceFull: isForcedFull,
+            key,
+          },
+          key
+        );
+
+        if (apiUrlRef.current !== requestUrl) {
+          return;
+        }
 
         setStore(result.store);
         setSyncToken(result.syncToken);
@@ -106,13 +118,20 @@ export function TrackProvider({ children }: { children: React.ReactNode }) {
         setProgress(null);
         setLastError(null);
 
-        await saveSnapshot({
-          store: result.store,
-          syncToken: result.syncToken,
-          accounts: result.accounts,
-          lastSyncedAt: result.lastSyncedAt,
-        });
+        try {
+          await saveSnapshot({
+            store: result.store,
+            syncToken: result.syncToken,
+            accounts: result.accounts,
+            lastSyncedAt: result.lastSyncedAt,
+          });
+        } catch (saveErr) {
+          console.warn('Failed to save snapshot:', saveErr);
+        }
       } catch (err: any) {
+        if (apiUrlRef.current !== requestUrl) {
+          return;
+        }
         setStatus(isOfflineRef.current ? 'offline' : 'error');
         setLastError(err instanceof Error ? err : new Error(String(err)));
         setProgress(null);
@@ -129,7 +148,7 @@ export function TrackProvider({ children }: { children: React.ReactNode }) {
       await setPersistedApiUrl(newUrl);
       setApiUrlState(newUrl);
       apiUrlRef.current = newUrl;
-      await syncRef.current({ forceFull: true });
+      await syncRef.current({ forceFull: true, manual: true });
     },
     []
   );
@@ -168,7 +187,7 @@ export function TrackProvider({ children }: { children: React.ReactNode }) {
       setHasLoadedSnapshot(true);
 
       // Perform background sync
-      syncRef.current();
+      syncRef.current({ manual: false });
     }
 
     init();
@@ -184,8 +203,7 @@ export function TrackProvider({ children }: { children: React.ReactNode }) {
 
     const unsubscribe = NetInfo.addEventListener((state) => {
       const isConnected = state.isConnected;
-      const isInternetReachable = state.isInternetReachable;
-      const isOfflineNow = isConnected === false || isInternetReachable === false;
+      const isOfflineNow = isConnected === false;
 
       isOfflineRef.current = isOfflineNow;
 
@@ -195,7 +213,7 @@ export function TrackProvider({ children }: { children: React.ReactNode }) {
       } else {
         if (wasOffline) {
           wasOffline = false;
-          syncRef.current();
+          syncRef.current({ manual: false });
         }
       }
     });
@@ -216,7 +234,7 @@ export function TrackProvider({ children }: { children: React.ReactNode }) {
         ) {
           const ageMs = Date.now() - (lastSyncedAtRef.current || 0);
           if (ageMs > 60_000) {
-            syncRef.current();
+            syncRef.current({ manual: false });
           }
         }
         appStateRef.current = nextAppState;
