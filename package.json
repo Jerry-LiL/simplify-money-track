@@ -29,6 +29,7 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "test": "jest",
+    "test:live": "LIVE=1 jest src/data/__tests__/live.test.ts --runInBand",
     "typecheck": "tsc --noEmit",
     "dev": "node scripts/dev.js"
   },
