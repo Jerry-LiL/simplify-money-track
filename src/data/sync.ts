@@ -21,6 +21,8 @@ export interface SyncDeps {
   syncToken: string | null;
   accounts: Account[];
   onProgress?: (progress: SyncProgress) => void;
+  forceFull?: boolean;
+  key?: string;
 }
 
 export interface SyncResult {
@@ -32,10 +34,12 @@ export interface SyncResult {
 }
 
 let inFlightSync: Promise<SyncResult> | null = null;
+let inFlightKey: string | null = null;
 let currentGeneration = 0;
 
 export function resetSyncStateForTests(): void {
   inFlightSync = null;
+  inFlightKey = null;
   currentGeneration = 0;
 }
 
@@ -135,12 +139,24 @@ export async function incrementalSync(
   };
 }
 
-export async function syncAll(deps: SyncDeps): Promise<SyncResult> {
-  if (inFlightSync) {
+export async function syncAll(deps: SyncDeps, key?: string): Promise<SyncResult> {
+  const isForced = deps.forceFull ?? (deps.syncToken === null);
+  const syncKey = key ?? deps.key ?? `${deps.api.baseUrl}:${isForced}`;
+
+  while (inFlightSync && inFlightKey !== syncKey) {
+    try {
+      await inFlightSync;
+    } catch {
+      // ignore error from previous in-flight sync with a different key
+    }
+  }
+
+  if (inFlightSync && inFlightKey === syncKey) {
     return inFlightSync;
   }
 
   const gen = ++currentGeneration;
+  inFlightKey = syncKey;
 
   const run = async (): Promise<SyncResult> => {
     let accounts = deps.accounts;
@@ -151,7 +167,7 @@ export async function syncAll(deps: SyncDeps): Promise<SyncResult> {
 
     let syncResult: { store: TxnStore; syncToken: string; unreadable: number };
 
-    if (!deps.syncToken) {
+    if (deps.forceFull || !deps.syncToken) {
       syncResult = await fullSync(deps.api, accounts, deps.onProgress);
     } else {
       try {
@@ -178,9 +194,13 @@ export async function syncAll(deps: SyncDeps): Promise<SyncResult> {
     };
   };
 
-  inFlightSync = run().finally(() => {
-    inFlightSync = null;
+  const promise = run().finally(() => {
+    if (inFlightSync === promise) {
+      inFlightSync = null;
+      inFlightKey = null;
+    }
   });
 
-  return inFlightSync;
+  inFlightSync = promise;
+  return promise;
 }
