@@ -173,4 +173,72 @@ describe('normalizeTxn', () => {
     expect(normalizeTxn({ id: '1', account: '4821', txn_time: 12345, amount: 'bad-amount', type: 'DR' }, accounts)).toBeNull();
     expect(normalizeTxn({ id: '1', account: '4821', txn_time: 12345, amount: '100', type: 'UNKNOWN' }, accounts)).toBeNull();
   });
+
+  it('accepts numeric ids and converts them to strings', () => {
+    const raw = {
+      id: 998877,
+      account_id: 'acc_4821',
+      occurred_at: '2026-10-09T13:42:00Z',
+      direction: 'debit',
+      amount_minor: 1000,
+      status: 'POSTED',
+    };
+    const txn = normalizeTxn(raw, accounts);
+    expect(txn?.id).toBe('998877');
+  });
+
+  it('treats numeric timestamps > 1e12 as milliseconds and <= 1e12 as seconds', () => {
+    const rawMs = {
+      id: 't_ms',
+      account_id: 'acc_4821',
+      occurred_at: 1760000000123, // > 1e12
+      direction: 'debit',
+      amount_minor: 1000,
+      status: 'POSTED',
+    };
+    const txnMs = normalizeTxn(rawMs, accounts);
+    expect(txnMs?.occurredAt).toBe(1760000000123);
+
+    const rawSec = {
+      id: 't_sec',
+      account_id: 'acc_4821',
+      occurred_at: 1760000000, // <= 1e12
+      direction: 'debit',
+      amount_minor: 1000,
+      status: 'POSTED',
+    };
+    const txnSec = normalizeTxn(rawSec, accounts);
+    expect(txnSec?.occurredAt).toBe(1760000000000);
+  });
+
+  it('uppercases currency codes', () => {
+    const raw = {
+      id: 't_curr',
+      account_id: 'acc_3310',
+      occurred_at: '2026-10-09T13:42:00Z',
+      direction: 'debit',
+      amount_minor: 1000,
+      currency: 'usd',
+      status: 'POSTED',
+    };
+    const txn = normalizeTxn(raw, accounts);
+    expect(txn?.currency).toBe('USD');
+  });
+
+  it('accepts numeric legacy account and linked_account numbers', () => {
+    const raw = {
+      id: 12345,
+      account: 4821,
+      txn_time: 1774981380,
+      amount: '200.00',
+      type: 'DR',
+      linked_account: 9075,
+    };
+    const txn = normalizeTxn(raw, accounts);
+    expect(txn).not.toBeNull();
+    expect(txn?.id).toBe('12345');
+    expect(txn?.accountId).toBe('acc_4821');
+    expect(txn?.ownTransfer).toBe(true);
+    expect(txn?.counterpartyAccountId).toBe('acc_9075');
+  });
 });

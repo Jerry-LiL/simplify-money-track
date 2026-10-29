@@ -6,13 +6,16 @@ export function parseDateMs(raw: unknown): number | null {
     if (!Number.isFinite(raw)) {
       return null;
     }
-    return raw * 1000;
+    return raw > 1e12 ? Math.round(raw) : Math.round(raw * 1000);
   }
   if (typeof raw === 'string') {
     const trimmed = raw.trim();
-    if (/^\d+$/.test(trimmed)) {
-      const num = parseInt(trimmed, 10);
-      return Number.isFinite(num) ? num * 1000 : null;
+    if (/^\d+(\.\d+)?$/.test(trimmed)) {
+      const num = Number(trimmed);
+      if (!Number.isFinite(num)) {
+        return null;
+      }
+      return num > 1e12 ? Math.round(num) : Math.round(num * 1000);
     }
     const ms = Date.parse(trimmed);
     if (Number.isNaN(ms)) {
@@ -35,14 +38,14 @@ export function buildAccountMap(
   const map = new Map<string, string>();
   if (Array.isArray(accounts)) {
     for (const acc of accounts) {
-      if (acc && acc.last4 && acc.id) {
-        map.set(acc.last4, acc.id);
+      if (acc && acc.last4 !== undefined && acc.last4 !== null && acc.id) {
+        map.set(String(acc.last4), acc.id);
       }
     }
   } else if (typeof accounts === 'object') {
     for (const [k, v] of Object.entries(accounts)) {
       if (typeof v === 'string') {
-        map.set(k, v);
+        map.set(String(k), v);
       }
     }
   }
@@ -58,7 +61,11 @@ export function normalizeTxn(
   }
 
   const rec = raw as Record<string, any>;
-  if (typeof rec.id !== 'string' || !rec.id.trim()) {
+  if (rec.id === null || rec.id === undefined) {
+    return null;
+  }
+  const id = String(rec.id).trim();
+  if (!id) {
     return null;
   }
 
@@ -96,7 +103,7 @@ export function normalizeTxn(
     amountMinor = rec.amount_minor;
 
     if (typeof rec.currency === 'string' && rec.currency.trim()) {
-      currency = rec.currency.trim();
+      currency = rec.currency.trim().toUpperCase();
     }
 
     if (currency === 'INR') {
@@ -124,7 +131,12 @@ export function normalizeTxn(
         typeof rec.counterparty.account_id === 'string' ? rec.counterparty.account_id : null;
     }
   } else if ('txn_time' in rec) {
-    const rawAccount = typeof rec.account === 'string' ? rec.account : String(rec.account || '');
+    let rawAccount = '';
+    if (typeof rec.account === 'string') {
+      rawAccount = rec.account.trim();
+    } else if (typeof rec.account === 'number') {
+      rawAccount = String(rec.account);
+    }
     if (!rawAccount) {
       return null;
     }
@@ -151,10 +163,17 @@ export function normalizeTxn(
     status = typeof rec.status === 'string' ? rec.status : 'POSTED';
     updatedAt = 0;
 
-    if (rec.linked_account) {
-      const rawLinked = String(rec.linked_account);
-      ownTransfer = true;
-      counterpartyAccountId = accountMap.get(rawLinked) || `acc_${rawLinked}`;
+    if (rec.linked_account !== undefined && rec.linked_account !== null) {
+      let rawLinked = '';
+      if (typeof rec.linked_account === 'string') {
+        rawLinked = rec.linked_account.trim();
+      } else if (typeof rec.linked_account === 'number') {
+        rawLinked = String(rec.linked_account);
+      }
+      if (rawLinked) {
+        ownTransfer = true;
+        counterpartyAccountId = accountMap.get(rawLinked) || `acc_${rawLinked}`;
+      }
     }
   } else {
     return null;
@@ -165,7 +184,7 @@ export function normalizeTxn(
   }
 
   return {
-    id: rec.id,
+    id,
     accountId,
     occurredAt,
     direction,
