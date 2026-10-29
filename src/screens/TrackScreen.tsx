@@ -69,7 +69,7 @@ export function TrackScreen({ navigation }: Props) {
   }, [navigation]);
 
   const handleRetry = useCallback(() => {
-    sync();
+    sync({ manual: true });
   }, [sync]);
 
   const renderRow = useCallback(
@@ -107,10 +107,10 @@ export function TrackScreen({ navigation }: Props) {
   }, []);
 
   const totalTxnCount = Object.keys(store.byId).length;
-  const isFirstLaunchNoCache = hasLoadedSnapshot && lastSyncedAt === null && totalTxnCount === 0;
+  const hasNoCachedData = hasLoadedSnapshot && totalTxnCount === 0;
 
   // Very first sync: show a full progress state, NOT partial rows with partial totals
-  if (isFirstLaunchNoCache && status === 'syncing') {
+  if (hasNoCachedData && status === 'syncing') {
     const loadedCount = progress ? progress.recordsLoaded : 0;
     return (
       <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
@@ -139,8 +139,14 @@ export function TrackScreen({ navigation }: Props) {
     );
   }
 
-  // First launch failure (server down or invalid URL) with no cache
-  if (isFirstLaunchNoCache && status === 'error') {
+  // No cached data and error, offline, or idle with zero rows and lastError
+  const shouldShowErrorPanel =
+    hasNoCachedData &&
+    (status === 'error' ||
+      status === 'offline' ||
+      (status === 'idle' && rows.length === 0 && lastError !== null));
+
+  if (shouldShowErrorPanel) {
     return (
       <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
         <View style={styles.header}>
