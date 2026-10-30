@@ -10,6 +10,7 @@ Built against [`simplify-money/track-api-mock`](https://github.com/simplify-mone
 - Walkthrough video: _Vineet to add link_
 - PR #412 review: [REVIEW.md](REVIEW.md)
 - Design notes for talking through it: [NOTES.md](NOTES.md)
+- Task 4 stretch picked: **Sync that holds up** (killed halfway through, 410 expired token, racing syncs). Code: `src/data/sync.ts` (full sync into a staging store, 410 falls back to a full re-sync, one in-flight sync per server URL), `src/data/persist.ts` (chunks written first, manifest last). Tests: `src/data/__tests__/sync.test.ts`, `src/data/__tests__/persist.test.ts`, and `npm run test:live` (`src/data/__tests__/live.test.ts`).
 
 ## Run it (under 5 minutes)
 
@@ -99,9 +100,10 @@ disk. If anything fails, the old data stays on screen with a line saying why.
    `toLocaleString('en-IN')`, because I didn't want the numbers to depend on which Intl data the
    phone's JS engine happens to have.
 
-4. **Months are IST months.** I first grouped by the UTC date and October 2025
-   was off. The very first salary (`₹2,42,333`) is at `2025-09-30T19:02Z`, which
-   is 1 Oct, 12:32 am in India. Grouping on IST puts it in October, and that's
+4. **Months are IST months.** Before writing any date code I checked where the
+   month boundary falls, because grouping by the UTC date would put the wrong
+   rows in the wrong month. The very first salary (`₹2,42,333`) is at
+   `2025-09-30T19:02Z`, which is 1 Oct, 12:32 am in India. Grouping on IST puts it in October, and that's
    also where `checkpoint.json` expects it. The backend's own
    `/v1/summary/months` buckets in UTC (it has a September 2025 with 2
    transactions), so I don't use that endpoint at all.
@@ -208,8 +210,9 @@ and formats rupees the US way.
 >
 > It formatted every amount as rupees, so the US$10.00 Notion charge showed
 > up for "₹10", and it matched any substring of the amount, so typing "4"
-> while looking for a merchant matched most of the year. The fixed version
-> (commit "Tighten search: merchant first, amounts only for numeric
+> while looking for a merchant matched 1,768 of the 4,675 transactions (about
+> 38%), 1,752 of them only because a 4 appeared somewhere in the amount. The
+> fixed version (commit "Tighten search: merchant first, amounts only for numeric
 > queries") only compares amounts when the query has at least two digits,
 > compares against the INR value (`inrMinor`), and needs the whole rupee
 > part to match:
